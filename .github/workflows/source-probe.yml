@@ -1,0 +1,47 @@
+name: source probe
+
+# Manual only. Checks from a runner whether the API answers and how fast:
+# the group list, the newest victim rows, one month of victim rows and the
+# totals; reports latency, row counts, every non-200 answer (a refused key
+# is named) and every 200 that is not what was asked for. Stores nothing.
+# Set the repository secrets API_BASE (the API's base URL) and API_KEY
+# (the key sent on every request)
+# (Settings → Secrets and variables → Actions → Secrets); they are masked in every log.
+on:
+  workflow_dispatch:
+    inputs:
+      pace:
+        description: "seconds between requests"
+        required: false
+        default: "1"
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse without the source secrets
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          missing=0
+          for n in API_BASE API_KEY; do
+            if [ -z "${!n}" ]; then echo "::error::repository secret $n is not set"; missing=1; fi
+          done
+          exit $missing
+      - name: probe
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+          PACE: ${{ inputs.pace }}
+          SPACES_ENDPOINT: ${{ secrets.SPACES_ENDPOINT }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_KEY: ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
+          SPACES_REGION: sgp1
+        run: |
+          chmod +x bin/source-probe
+          sha256sum bin/source-probe
+          bin/source-probe

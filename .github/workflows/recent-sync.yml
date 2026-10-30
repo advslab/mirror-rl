@@ -1,0 +1,54 @@
+name: recent sync
+
+# Hourly. One request for the API's newest victim rows, written to
+# recent.ndjson.gz in the walk's release (tag `data`), then state.json.
+# It shares the walk's concurrency group, so the two never run at once;
+# an hour queued behind a walk is taken when the walk ends.
+#
+# Set the repository secrets API_BASE (the API's base URL) and API_KEY
+# (the key sent on every request)
+# (Settings → Secrets and variables → Actions → Secrets); they are masked in every log.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: walk
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse without the source secrets
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          missing=0
+          for n in API_BASE API_KEY; do
+            if [ -z "${!n}" ]; then echo "::error::repository secret $n is not set"; missing=1; fi
+          done
+          exit $missing
+      - name: sync
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+          RELEASE_TAG: data
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SPACES_ENDPOINT: ${{ secrets.SPACES_ENDPOINT }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_KEY: ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
+          SPACES_REGION: sgp1
+        run: |
+          chmod +x bin/recent-sync
+          sha256sum bin/recent-sync
+          bin/recent-sync

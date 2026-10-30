@@ -1,0 +1,102 @@
+name: source walk
+
+# Keeps one rolling release (tag `data`) of the API's groups and victim
+# listings, every body as the server returned it: groups.ndjson.gz,
+# iocs.ndjson.gz and stats.json rebuilt every day, and one
+# victims-YYYY-MM.ndjson.gz per month of discovered date, each fetched
+# once and again only while it is the current month or one of the two
+# before it; indexed by state.json, written last. A run stops at its time
+# budget and publishes what it finished; the next run goes on from there.
+#
+# Chaining: when a run ends with work left (its budget, or an error other
+# than a stall) and `chain` is above 0, it dispatches one follow-up run with
+# chain - 1. The concurrency group keeps runs one at a time, the recent
+# sync's among them.
+#
+# Set the repository secrets API_BASE (the API's base URL) and API_KEY
+# (the key sent on every request)
+# (Settings → Secrets and variables → Actions → Secrets); they are masked in every log.
+on:
+  schedule:
+    - cron: "35 3 * * *"
+  workflow_dispatch:
+    inputs:
+      chain:
+        description: "how many follow-up runs may still follow this one"
+        required: false
+        default: "1"
+      budget:
+        description: "minutes the walk may run"
+        required: false
+        default: "50"
+      pace:
+        description: "seconds between requests"
+        required: false
+        default: "1"
+      cooldown:
+        description: "minutes to wait after 8 calls in a row failed the same way (default 30)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: walk
+  cancel-in-progress: false
+
+jobs:
+  walk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse without the source secrets
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          missing=0
+          for n in API_BASE API_KEY; do
+            if [ -z "${!n}" ]; then echo "::error::repository secret $n is not set"; missing=1; fi
+          done
+          exit $missing
+      - name: walk
+        id: walk
+        env:
+          API_BASE: ${{ secrets.API_BASE }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BUDGET: ${{ inputs.budget || '50' }}
+          PACE: ${{ inputs.pace || '1' }}
+          COOLDOWN: ${{ inputs.cooldown }}
+          CHAIN: ${{ inputs.chain || '1' }}
+          RELEASE_TAG: data
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SPACES_ENDPOINT: ${{ secrets.SPACES_ENDPOINT }}
+          SPACES_BUCKET: ${{ secrets.SPACES_BUCKET }}
+          SPACES_KEY: ${{ secrets.SPACES_KEY }}
+          SPACES_SECRET: ${{ secrets.SPACES_SECRET }}
+          SPACES_REGION: sgp1
+        run: |
+          chmod +x bin/source-walk
+          sha256sum bin/source-walk
+          bin/source-walk
+          more=$(sed -n 's/^more=//p' "$GITHUB_OUTPUT" | tail -n 1)
+          if [ "$more" != true ] || [ "$CHAIN" -le 0 ]; then
+            echo "chain: no follow-up run requested (more=${more:-unset}, chain=$CHAIN)"
+          fi
+      - name: chain
+        if: ${{ success() && steps.walk.outputs.more == 'true' && fromJSON(inputs.chain || '1') > 0 }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHAIN: ${{ inputs.chain || '1' }}
+          BUDGET: ${{ inputs.budget || '50' }}
+          PACE: ${{ inputs.pace || '1' }}
+          COOLDOWN: ${{ inputs.cooldown }}
+        run: |
+          left=$((CHAIN - 1))
+          gh workflow run source-walk.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME" \
+            -f chain="$left" -f budget="$BUDGET" -f pace="$PACE" -f cooldown="$COOLDOWN"
+          echo "chain: follow-up run requested; $left more may follow it"
